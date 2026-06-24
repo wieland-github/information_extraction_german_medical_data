@@ -1,5 +1,8 @@
 models/
 data/
 
-
+# Geheimnisse / API-Keys - niemals committen!
+.env
+.env.*
+!.env.example
 

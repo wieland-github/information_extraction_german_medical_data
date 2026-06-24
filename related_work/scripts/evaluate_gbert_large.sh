@@ -5,11 +5,18 @@
 set -e
 cd "$(dirname "$0")/.."
 
-GPU_ID="${1:-0}"
-MODEL_DIR="models/gbert-large/model-best"
 
-python -m spacy evaluate "$MODEL_DIR" ./data_split/test.spacy \
-  --output ./models/gbert-large/test_metrics.json \
+GPU_ID="${1:-0}"
+MODEL_DIR="./models/gbert-large-test/model-best"
+TEST_DATA="./data_split/test.spacy"
+OUTPUT="./models/gbert-large-test/test_metrics.json"
+
+mkdir -p "$(dirname "$OUTPUT")"
+
+python -m spacy benchmark accuracy \
+  "$MODEL_DIR" \
+  "$TEST_DATA" \
+  --output "$OUTPUT" \
   --gpu-id "$GPU_ID"
 
 echo "Fertig: models/gbert-large/test_metrics.json"

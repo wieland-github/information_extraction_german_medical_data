@@ -23,12 +23,15 @@ if [ "$MODE" = "test" ]; then
   OUT="$OUT-test"
 fi
 
+# paper spezifisch ab; optimizer
 python -m spacy train config_spacy.cfg \
   --components.transformer.model.name "$MODEL" \
   --output "./$OUT" \
   --paths.train ./data_split/train.spacy \
   --paths.dev   ./data_split/validation.spacy \
   --gpu-id "$GPU_ID" \
+  --training.optimizer.learning_rate.initial_rate 5e-5 \
+  --training.batcher.size = 128 \
   $EXTRA
 
 echo "Fertig: $OUT/model-best"
