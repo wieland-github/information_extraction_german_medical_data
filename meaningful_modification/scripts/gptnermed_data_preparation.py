@@ -3,7 +3,8 @@ from spacy.tokens import DocBin
 from spacy.util import filter_spans
 
 import argparse
-from datasets import load_dataset, load_from_disk
+import json
+from datasets import load_dataset
 from pathlib import Path
 
 """
@@ -50,6 +51,22 @@ def data_to_docbin(*datasets):
     return doc_bin
 
 
+def load_synthetic(path):
+    """
+    Laedt die synthetischen Saetze aus einer JSONL-Datei (versionsunabhaengig).
+    Bewusst kein datasets.load_from_disk: der Arrow-Ordner wird ggf. mit einer
+    neueren datasets-Version geschrieben als die auf Colab (dort <3.0.0 noetig).
+    Format pro Zeile: {"sentence": ..., "ner_labels": {"ner_class": [...], "start": [...], "stop": [...]}}
+    """
+    records = []
+    with open(path, encoding="utf-8") as file:
+        for line in file:
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+    return records
+
+
 def parse_arguments():
     """
     Parses the given arguments.
@@ -59,8 +76,8 @@ def parse_arguments():
     parser.add_argument("--dataset", default="jfrei/GPTNERMED")
     parser.add_argument("--outdir", default=None)
     parser.add_argument("--synthetic", default=None,
-                        help="Pfad zum synthetischen Dataset (save_to_disk), "
-                             "wird an die Trainingsdaten angehaengt.")
+                        help="Pfad zur synthetischen JSONL-Datei "
+                             "(synthetic_gptnermed.jsonl), wird an die Trainingsdaten angehaengt.")
 
     args = parser.parse_args()
     return args
@@ -84,7 +101,7 @@ def main():
     # Validation/Test bleiben das Original -> Ergebnisse bleiben mit der Baseline vergleichbar.
     train_parts = [training_data]
     if args.synthetic:
-        synthetic_data = load_from_disk(args.synthetic)
+        synthetic_data = load_synthetic(args.synthetic)
         print(f"Synthetische Saetze angehaengt: {len(synthetic_data)}")
         train_parts.append(synthetic_data)
 
