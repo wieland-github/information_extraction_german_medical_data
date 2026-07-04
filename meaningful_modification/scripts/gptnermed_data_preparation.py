@@ -3,7 +3,7 @@ from spacy.tokens import DocBin
 from spacy.util import filter_spans
 
 import argparse
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 from pathlib import Path
 
 """
@@ -23,28 +23,29 @@ def get_label(label_id):
     }
     return label_mapping.get(label_id)
 
-def data_to_docbin(data):
+def data_to_docbin(*datasets):
     """
-    Converts the data to a DocBin format for spaCy training.
+    Converts one or more datasets to a single DocBin for spaCy training.
+    Mehrere Datensaetze werden in eine DocBin zusammengefuehrt (z.B. Original + synthetisch).
     """
     doc_bin = DocBin()
     nlp = spacy.blank("de")
 
-    for example in data:
-        text = example["sentence"]
-        labels = example["ner_labels"]
-        doc = nlp(text)
+    for data in datasets:
+        for example in data:
+            text = example["sentence"]
+            labels = example["ner_labels"]
+            doc = nlp(text)
 
-        ents = []
-        for start, stop, label_id in zip (labels["start"], labels["stop"], labels["ner_class"]):
+            ents = []
+            for start, stop, label_id in zip (labels["start"], labels["stop"], labels["ner_class"]):
 
-            label = get_label(label_id)
-            span = doc.char_span(int(start), int(stop), label=label, alignment_mode="expand")
-            ents.append(span)
-            filtered_ents = filter_spans(ents)
-        
-        doc.ents = filtered_ents
-        doc_bin.add(doc)
+                label = get_label(label_id)
+                span = doc.char_span(int(start), int(stop), label=label, alignment_mode="expand")
+                ents.append(span)
+
+            doc.ents = filter_spans(ents)
+            doc_bin.add(doc)
 
     return doc_bin
 
@@ -57,6 +58,9 @@ def parse_arguments():
 
     parser.add_argument("--dataset", default="jfrei/GPTNERMED")
     parser.add_argument("--outdir", default=None)
+    parser.add_argument("--synthetic", default=None,
+                        help="Pfad zum synthetischen Dataset (save_to_disk), "
+                             "wird an die Trainingsdaten angehaengt.")
 
     args = parser.parse_args()
     return args
@@ -76,7 +80,15 @@ def main():
     validation_data = dataset["validation"]
     test_data = dataset["test"]
 
-    doc_bin_train = data_to_docbin(training_data)
+    # Synthetische Saetze NUR an das Training anhaengen.
+    # Validation/Test bleiben das Original -> Ergebnisse bleiben mit der Baseline vergleichbar.
+    train_parts = [training_data]
+    if args.synthetic:
+        synthetic_data = load_from_disk(args.synthetic)
+        print(f"Synthetische Saetze angehaengt: {len(synthetic_data)}")
+        train_parts.append(synthetic_data)
+
+    doc_bin_train = data_to_docbin(*train_parts)
     doc_bin_validation = data_to_docbin(validation_data)
     doc_bin_test = data_to_docbin(test_data)
 

@@ -1,7 +1,8 @@
 """
 Synthetische NER-Trainingsdaten mit einem LLM (Gemini) erzeugen.
 
-Aufruf (um 100 sätze zu erzeugen): python generate_new_dataset.py --num_sentences 100 
+Aufruf (um 5 sätze zu erzeugen): python meaningful_modification/scripts/generate_new_dataset.py --num_sentences 5 
+Aufruf (gemini-2.5-flash-lite): python meaningful_modification/scripts/generate_new_dataset.py --num_sentences 5 --model gemini-2.5-flash-lite
 """
 
 # --------------------------------------------------------------------------
@@ -12,28 +13,33 @@ import json
 import os
 import random
 import re
+import time
 from pathlib import Path
 
 import pandas as pd
 from datasets import ClassLabel, Dataset, Features, Sequence, Value
 from dotenv import load_dotenv
 from google import genai
+from google.genai import errors
 
 
 # --------------------------------------------------------------------------
 # Konfiguration & Konstanten
 # --------------------------------------------------------------------------
-# Ordner mit den offiziellen medizinischen Listen (relativ zu diesem Skript)
+# Ordner mit den offiziellen medizinischen Listen
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "medical_information"
 
 # Struktur (Reihenfolge/Anzahl) der Entitaeten, die pro Satz gesampelt werden
 SHAPES = [
+    ("Medikation",),                                  
     ("Medikation", "Dosis"),
     ("Medikation", "Dosis", "Diagnose"),
     ("Diagnose",),
     ("Medikation", "Diagnose"),
-    ("Medikation", "Dosis", "Diagnose", "Diagnose"),
+    ("Medikation", "Dosis", "Medikation", "Dosis"),   
+    ("Diagnose", "Diagnose"),                          
 ]
+
 
 # original 12 sentences from prompt used to generate the GPTNERMED dataset
 ORIGINAL_SENTENCES = [
@@ -88,14 +94,22 @@ DATASET_FEATURES = Features({
     }),
 })
 
+STYLES = [
+    "ein vollständiger, grammatischer Satz",
+    "eine knappe, telegrammartige Klinik-Notiz (kein voller Satzbau)",
+    "eine Medikationszeile mit Dosierschema (z.B. 1-0-0, p.o.)",
+    "eine Aussage aus Patientensicht (Ich-Form)",
+    "ein Auszug aus einem Arztbrief",
+]
+CONTEXTS = ["Aufnahme", "Anamnese", "Verlauf", "Entlassung", "Befund", "Medikationsplan"]
+
 
 # --------------------------------------------------------------------------
 # Daten aus den CSV-Dateien laden
 # --------------------------------------------------------------------------
 def load_medical_data(data_dir=DATA_DIR):
     whoACTddd = pd.read_csv(data_dir / "who_atc_ddd.csv")
-    # Nur Zeilen mit echter Tagesdosis (ddd) und Einheit (uom); die reinen
-    # ATC-Kategoriezeilen (z. B. "A", "A01") haben hier NA.
+    # Nur Zeilen mit Tagesdosis (ddd) und Einheit
     whoACTddd = whoACTddd.dropna(subset=["ddd", "uom"])
 
     AlphaIDSE = pd.read_csv(
@@ -105,10 +119,17 @@ def load_medical_data(data_dir=DATA_DIR):
         dtype=str
     )
 
+    ICD10GM = pd.read_csv(
+        data_dir / "ICD-10-GM.csv",
+        sep=";",
+        encoding="utf-8-sig",
+        dtype=str
+    )
+
     MEDS = (whoACTddd["atc_name"].astype(str).to_list())
     DOSE_UNITS = (whoACTddd["uom"].astype(str).to_list())
     DOSE_VAL = (whoACTddd["ddd"].astype(str).to_list())
-    DIAGS = (AlphaIDSE["Diagnose"].astype(str).to_list())
+    DIAGS = (ICD10GM["Diagnose"].astype(str).to_list())
 
     return MEDS, DIAGS, DOSE_VAL, DOSE_UNITS
 
@@ -178,17 +199,16 @@ def build_task(entities):
 
 def build_format():
     lines = ["Format:"]
-    lines.append('{"text": "...", "label": [[start, stop, "Medikation|Dosis|Diagnose"], ...]}')
+    lines.append('{"text": "...", "entities": [{"text": "...", "label": "Medikation|Dosis|Diagnose"}, ...]}')
     return "\n".join(lines)
 
 def build_llm_prompt(rng, medication, diagnoses, entities, example_pool=EXAMPLE_POOL, num_examples=2):
 
     message = []
-    message.append(f"System: {SYSTEM_PROMT}")
-    message.append("\n")
-    message.append("\n")
-    message.append("User:" + "\n")
     message.append(build_task(entities))
+    message.append("\n")
+    message.append("\n")
+    message.append(f"Formuliere als: {rng.choice(STYLES)}. \nKontext: {rng.choice(CONTEXTS)}. ")
     message.append("\n")
     message.append("\n")
     message.append(build_format())
@@ -203,17 +223,47 @@ def build_llm_prompt(rng, medication, diagnoses, entities, example_pool=EXAMPLE_
 # --------------------------------------------------------------------------
 # LLM aufrufen
 # --------------------------------------------------------------------------
-def call_LLM(model, message):
+# HTTP-Codes, bei denen sich ein erneuter Versuch lohnt:
+# 429 = Rate-Limit, 5xx = transiente Serverfehler.
+RETRYABLE_CODES = {429, 500, 502, 503, 504}
 
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+# Client einmal erzeugen und wiederverwenden (nicht pro Aufruf neu).
+_CLIENT = None
 
-    response = client.models.generate_content(
-        model=model,
-        contents=message,
-    )
 
-    print(response.text)
-    return response.text
+def _get_client():
+    global _CLIENT
+    if _CLIENT is None:
+        _CLIENT = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    return _CLIENT
+
+
+def call_LLM(model, message, max_retries=6, base_delay=2.0):
+    client = _get_client()
+
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=message,
+                config={
+                    "system_instruction": SYSTEM_PROMT,
+                },
+            )
+            return response.text
+        except errors.APIError as error:
+            code = getattr(error, "code", None)
+            # Nur bei Rate-Limit/Serverfehlern warten und erneut versuchen.
+            if code in RETRYABLE_CODES and attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                print(f"[retry] API {code}, warte {delay:.1f}s "
+                      f"(Versuch {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+                continue
+            # Nicht behebbar (z.B. 400/401/403) oder Retries erschoepft: weiterreichen.
+            raise
+
+    raise RuntimeError("call_LLM: max_retries erschoepft")
 
 
 # --------------------------------------------------------------------------
@@ -230,9 +280,10 @@ def get_label_id(label):
 def find_spans(sentence, entities):
     spans = []
 
+    sentence = sentence.lower()
+
     for ent in entities:
         ent_lower = ent["text"].lower()
-        sentence = sentence.lower()
 
         start = sentence.find(ent_lower)
         stop = start + len(ent_lower)
