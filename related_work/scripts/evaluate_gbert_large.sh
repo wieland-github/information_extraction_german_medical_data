@@ -7,9 +7,10 @@ cd "$(dirname "$0")/.."
 
 
 GPU_ID="${1:-0}"
-MODEL_DIR="./models/gbert-large-test/model-best"
+#MODEL_DIR="./models/gbert-large-seed-42-model-best/model-best"
+MODEL_DIR="./models/gbert-large-seed-42-model-best"
 TEST_DATA="./data/test.spacy"
-OUTPUT="./models/gbert-large-test/test_metrics.json"
+OUTPUT="./models/gbert-large-seed-42-model-best/test_metrics.json"
 
 mkdir -p "$(dirname "$OUTPUT")"
 
@@ -19,4 +20,4 @@ python -m spacy benchmark accuracy \
   --output "$OUTPUT" \
   --gpu-id "$GPU_ID"
 
-echo "Fertig: models/gbert-large/test_metrics.json"
+echo "Fertig: models/gbert-large-seed-42-model-best/test_metrics.json"
